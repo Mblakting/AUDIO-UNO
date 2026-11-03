@@ -203,6 +203,56 @@ const inputCls = "h-9 px-3 rounded-md border border-white/10 bg-white/5 text-whi
 const btnCls   = "h-9 px-3 rounded-md border border-white/10 bg-white/5 text-white/60 text-xs font-medium hover:bg-white/10 hover:text-white/90 hover:border-white/20 transition-colors whitespace-nowrap";
 const accentBtnCls = "h-9 px-4 rounded-md bg-[#d1f267]/10 border border-[#d1f267]/30 text-[#d1f267] text-xs font-semibold hover:bg-[#d1f267]/20 transition-colors";
 
+// ── Custom Select (replaces native <select> to avoid white OS popup) ──────────
+type SelectOption = { value: string; label: string };
+
+function CustomSelect({ value, onChange, options }: {
+  value: string;
+  onChange: (v: string) => void;
+  options: SelectOption[];
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const selected = options.find(o => o.value === value) ?? options[0];
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  return (
+    <div ref={ref} className="relative">
+      <button type="button"
+        className={`${btnCls} flex items-center gap-2 min-w-[130px] justify-between`}
+        onClick={() => setOpen(v => !v)}
+        aria-haspopup="listbox" aria-expanded={open}>
+        <span className="truncate">{selected.label}</span>
+        <span className={`text-[10px] transition-transform duration-150 ${open ? "rotate-180" : ""}`}>▾</span>
+      </button>
+      {open && (
+        <div role="listbox"
+          className="absolute left-0 top-full mt-1.5 z-30 min-w-full w-max max-w-[220px] py-1 rounded-lg border border-white/10 bg-[#131316] shadow-2xl backdrop-blur-md">
+          {options.map(opt => (
+            <button key={opt.value} role="option" type="button"
+              aria-selected={opt.value === value}
+              onClick={() => { onChange(opt.value); setOpen(false); }}
+              className={`w-full text-left px-3 py-2 text-xs transition-colors ${
+                opt.value === value
+                  ? "text-[#d1f267] bg-[#d1f267]/10"
+                  : "text-white/60 hover:bg-white/5 hover:text-white/90"
+              }`}>
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function RawDataPage() {
   const [data, setData]             = useState<ApiResponse | null>(null);
@@ -277,27 +327,38 @@ export default function RawDataPage() {
             onKeyDown={e => e.key === "Enter" && load(1)} />
         </div>
 
-        <select className={`${inputCls} cursor-pointer`} value={category}
-          onChange={e => setCategory(e.target.value)}>
-          <option value="">All categories</option>
-          {["New Albums","Anticipated","Top Rated","Singles & EPs"].map(c =>
-            <option key={c} value={c}>{c}</option>)}
-        </select>
+        <CustomSelect
+          value={category}
+          onChange={setCategory}
+          options={[
+            { value: "", label: "All categories" },
+            { value: "New Albums", label: "New Albums" },
+            { value: "Anticipated", label: "Anticipated" },
+            { value: "Top Rated", label: "Top Rated" },
+            { value: "Singles & EPs", label: "Singles & EPs" },
+          ]}
+        />
 
-        <select className={`${inputCls} cursor-pointer`} value={mustHear}
-          onChange={e => setMustHear(e.target.value)}>
-          <option value="">All</option>
-          <option value="true">★ Must Hear</option>
-          <option value="false">Non-Must Hear</option>
-        </select>
+        <CustomSelect
+          value={mustHear}
+          onChange={setMustHear}
+          options={[
+            { value: "", label: "All" },
+            { value: "true", label: "★ Must Hear" },
+            { value: "false", label: "Non-Must Hear" },
+          ]}
+        />
 
-        <select className={`${inputCls} cursor-pointer`} value={sortBy}
-          onChange={e => setSortBy(e.target.value)}>
-          <option value="">No sort</option>
-          <option value="criticScore">Critic Score</option>
-          <option value="userScore">User Score</option>
-          <option value="releaseDate">Release Date</option>
-        </select>
+        <CustomSelect
+          value={sortBy}
+          onChange={setSortBy}
+          options={[
+            { value: "", label: "No sort" },
+            { value: "criticScore", label: "Critic Score" },
+            { value: "userScore", label: "User Score" },
+            { value: "releaseDate", label: "Release Date" },
+          ]}
+        />
 
         <button className={btnCls}
           onClick={() => setSortOrder(o => o === "asc" ? "desc" : "asc")}>
