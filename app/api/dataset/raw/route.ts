@@ -11,30 +11,54 @@ const REMOTE_URL =
 const LOCAL_FILE = path.join(process.cwd(), "AUDIO_Complete_BigData.csv");
 
 async function openCsvStream(): Promise<NodeJS.ReadableStream & { cancel?: () => void }> {
-  // Prefer local file in dev if it exists (avoids network round-trip)
-  if (fs.existsSync(LOCAL_FILE)) {
-    return fs.createReadStream(LOCAL_FILE);
-  }
-
+  if (fs.existsSync(LOCAL_FILE)) return fs.createReadStream(LOCAL_FILE);
   const res = await fetch(REMOTE_URL);
-  if (!res.ok || !res.body) {
-    throw new Error(`Failed to fetch remote CSV (HTTP ${res.status})`);
-  }
-
-  const nodeStream = Readable.fromWeb(res.body as import("stream/web").ReadableStream) as NodeJS.ReadableStream & { cancel?: () => void };
-  // Attach cancel so callers can abort the HTTP download early
+  if (!res.ok || !res.body) throw new Error(`Failed to fetch remote CSV (HTTP ${res.status})`);
+  const nodeStream = Readable.fromWeb(
+    res.body as import("stream/web").ReadableStream,
+  ) as NodeJS.ReadableStream & { cancel?: () => void };
   nodeStream.cancel = () => res.body!.cancel().catch(() => {});
   return nodeStream;
 }
 
+function matchesFilters(
+  row: Record<string, string>,
+  search: string,
+  category: string,
+  mustHear: string,
+): boolean {
+  if (search) {
+    const q = search.toLowerCase();
+    if (
+      !row.artist?.toLowerCase().includes(q) &&
+      !row.title?.toLowerCase().includes(q)
+    ) return false;
+  }
+  if (category && row.audio_category !== category && row.mediaType !== category) return false;
+  if (mustHear === "true" && row.mustHear?.toLowerCase() !== "true") return false;
+  return true;
+}
+
+function numVal(s: string | undefined): number {
+  const n = parseFloat(s ?? "");
+  return isNaN(n) ? -Infinity : n;
+}
+
 export async function GET(request: NextRequest) {
-  const { searchParams } = request.nextUrl;
-  const limit = Math.min(Math.max(parseInt(searchParams.get("limit") ?? "50", 10), 1), 200);
-  const page  = Math.max(parseInt(searchParams.get("page") ?? "1", 10), 1);
-  const skip  = (page - 1) * limit;
+  const sp = request.nextUrl.searchParams;
+  const limit     = Math.min(Math.max(parseInt(sp.get("limit") ?? "50", 10), 1), 200);
+  const page      = Math.max(parseInt(sp.get("page") ?? "1", 10), 1);
+  const search    = sp.get("search")?.trim() ?? "";
+  const category  = sp.get("category")?.trim() ?? "";
+  const mustHear  = sp.get("mustHear")?.trim() ?? "";
+  const sortBy    = sp.get("sortBy")?.trim() ?? "";   // criticScore | userScore | releaseDate
+  const sortOrder = sp.get("sortOrder") === "asc" ? "asc" : "desc";
+
+  // When sorting we must collect all matching rows first, then slice
+  const needsSort = !!sortBy;
+  const skip = needsSort ? 0 : (page - 1) * limit;
 
   let source: (NodeJS.ReadableStream & { cancel?: () => void }) | null = null;
-
   try {
     source = await openCsvStream();
   } catch (err) {
@@ -45,29 +69,46 @@ export async function GET(request: NextRequest) {
   }
 
   return new Promise<NextResponse>((resolve) => {
-    const rows: Record<string, string>[] = [];
+    const matched: Record<string, string>[] = [];
     let headers: string[] = [];
-    let rowIndex = 0;
 
     const parser = source!.pipe(csvParser());
 
     parser.on("headers", (h: string[]) => { headers = h; });
 
     parser.on("data", (row: Record<string, string>) => {
-      if (rows.length >= limit) {
-        // Stop immediately — destroy parser and cancel HTTP download
+      if (!matchesFilters(row, search, category, mustHear)) return;
+
+      if (!needsSort && matched.length >= skip + limit) {
         parser.destroy();
         source!.cancel?.();
         return;
       }
-      if (rowIndex >= skip) rows.push(row);
-      rowIndex++;
+      matched.push(row);
     });
 
     parser.on("close", () => {
+      let result = matched;
+
+      if (needsSort) {
+        result = [...matched].sort((a, b) => {
+          let cmp = 0;
+          if (sortBy === "criticScore" || sortBy === "userScore") {
+            cmp = numVal(a[sortBy]) - numVal(b[sortBy]);
+          } else if (sortBy === "releaseDate") {
+            cmp = (a.releaseDate ?? "").localeCompare(b.releaseDate ?? "");
+          }
+          return sortOrder === "asc" ? cmp : -cmp;
+        });
+      }
+
+      const sliced = needsSort
+        ? result.slice((page - 1) * limit, page * limit)
+        : result.slice(skip, skip + limit);
+
       resolve(NextResponse.json(
-        { page, limit, count: rows.length, headers, rows },
-        { headers: { "Cache-Control": "public, max-age=300, s-maxage=300" } },
+        { page, limit, count: sliced.length, totalMatched: matched.length, headers, rows: sliced },
+        { headers: { "Cache-Control": "no-store" } },
       ));
     });
 
